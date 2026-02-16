@@ -33,6 +33,52 @@ interface TextSearchParams {
   region?: string;
 }
 
+/**
+ * next_page_tokenを使って全ページ取得する共通ヘルパー
+ * Google Places APIは1ページ最大20件、最大3ページ(60件)まで返す
+ */
+async function fetchAllPages(initialUrl: string, apiKey: string): Promise<PlaceSearchResult[]> {
+  const allResults: PlaceSearchResult[] = [];
+  const seenPlaceIds = new Set<string>();
+  let nextPageToken: string | undefined;
+  let pageCount = 0;
+  const maxPages = 3; // Google Places APIの上限
+
+  const addUniqueResults = (results: PlaceSearchResult[]) => {
+    for (const place of results) {
+      if (!seenPlaceIds.has(place.place_id)) {
+        seenPlaceIds.add(place.place_id);
+        allResults.push(place);
+      }
+    }
+  };
+
+  // 最初のリクエスト
+  const res = await fetch(initialUrl);
+  if (!res.ok) throw new Error(`Places API error: ${res.status}`);
+  const data = await res.json();
+  addUniqueResults(data.results || []);
+  nextPageToken = data.next_page_token;
+  pageCount++;
+
+  // next_page_tokenがある限り次のページを取得
+  while (nextPageToken && pageCount < maxPages) {
+    // Google Places APIはnext_page_tokenが有効になるまで少し待つ必要がある
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const pageUrl = new URL(initialUrl);
+    pageUrl.searchParams.set('pagetoken', nextPageToken);
+    const pageRes = await fetch(pageUrl.toString());
+    if (!pageRes.ok) break;
+    const pageData = await pageRes.json();
+    addUniqueResults(pageData.results || []);
+    nextPageToken = pageData.next_page_token;
+    pageCount++;
+  }
+
+  return allResults;
+}
+
 export async function nearbySearch(params: NearbySearchParams): Promise<PlaceSearchResult[]> {
   const url = new URL(`${PLACES_BASE}/nearbysearch/json`);
   url.searchParams.set('key', params.apiKey);
@@ -42,10 +88,7 @@ export async function nearbySearch(params: NearbySearchParams): Promise<PlaceSea
   if (params.keyword) url.searchParams.set('keyword', params.keyword);
   if (params.type) url.searchParams.set('type', params.type);
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Places API error: ${res.status}`);
-  const data = await res.json();
-  return data.results || [];
+  return fetchAllPages(url.toString(), params.apiKey);
 }
 
 export async function textSearch(params: TextSearchParams): Promise<PlaceSearchResult[]> {
@@ -55,10 +98,7 @@ export async function textSearch(params: TextSearchParams): Promise<PlaceSearchR
   url.searchParams.set('language', 'ja');
   if (params.region) url.searchParams.set('region', params.region);
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Places API error: ${res.status}`);
-  const data = await res.json();
-  return data.results || [];
+  return fetchAllPages(url.toString(), params.apiKey);
 }
 
 /**

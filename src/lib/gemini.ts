@@ -41,19 +41,52 @@ export async function generateContent(
     body.systemInstruction = { parts: [{ text: systemInstruction }] };
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const maxRetries = 4;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
 
-  if (!res.ok) {
+    if (res.ok) {
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    }
+
+    if (res.status === 429 && attempt < maxRetries) {
+      const waitMs = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s, 16s
+      console.warn(`Gemini API rate limited (429). Retrying in ${waitMs}ms... (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+      continue;
+    }
+
     const error = await res.text();
     throw new Error(`Gemini API error: ${res.status} - ${error}`);
   }
 
-  const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  throw new Error('Gemini API: max retries exceeded');
+}
+
+/**
+ * 競合データをコンパクトな形式にフォーマット（全件を渡す）
+ */
+function formatCompetitorData(data: any): string {
+  if (!Array.isArray(data)) return JSON.stringify(data, null, 2).substring(0, 6000);
+
+  // 各店舗の重要フィールドのみ抽出してコンパクトに
+  const formatted = data.map((place: any, i: number) => {
+    const parts = [`${i + 1}. ${place.name}`];
+    if (place.vicinity) parts.push(`住所: ${place.vicinity}`);
+    if (place.rating) parts.push(`評価: ${place.rating}(${place.user_ratings_total || 0}件)`);
+    if (place.business_status) parts.push(`状態: ${place.business_status}`);
+    if (place.geometry?.location) {
+      parts.push(`座標: ${place.geometry.location.lat},${place.geometry.location.lng}`);
+    }
+    return parts.join(' / ');
+  });
+
+  return formatted.join('\n');
 }
 
 /**
@@ -72,13 +105,13 @@ ${context.prefecture || '指定なし'}
 ${context.businessType || '不明'}
 
 ## 利用可能なデータ
-${context.populationData ? `### 人口統計データ\n${JSON.stringify(context.populationData, null, 2).substring(0, 3000)}` : '人口統計: データなし'}
+${context.populationData ? `### 人口統計データ\n${JSON.stringify(context.populationData, null, 2).substring(0, 4000)}` : '人口統計: データなし'}
 
-${context.competitorData ? `### 競合データ\n${JSON.stringify(context.competitorData, null, 2).substring(0, 3000)}` : '競合データ: なし'}
+${context.competitorData ? `### 競合データ（全${Array.isArray(context.competitorData) ? context.competitorData.length : 0}件）\n${formatCompetitorData(context.competitorData)}` : '競合データ: なし'}
 
 ${context.searchDemandData ? `### 検索需要データ\n${JSON.stringify(context.searchDemandData, null, 2).substring(0, 2000)}` : '検索需要: データなし'}
 
-${context.facilityData ? `### 周辺施設データ\n${JSON.stringify(context.facilityData, null, 2).substring(0, 2000)}` : '周辺施設: データなし'}
+${context.facilityData ? `### 周辺施設データ\n${JSON.stringify(context.facilityData, null, 2).substring(0, 3000)}` : '周辺施設: データなし'}
 
 ## 出力形式
 以下のJSON形式で出店候補地を3〜5箇所提案してください。必ず有効なJSONのみを出力してください。
@@ -122,11 +155,11 @@ ${context.query}
 ${context.prefecture || '指定なし'}
 
 ## 利用可能なデータ
-${context.competitorData ? `### 周辺施設・交通データ\n${JSON.stringify(context.competitorData, null, 2).substring(0, 3000)}` : 'データなし'}
+${context.competitorData ? `### 周辺施設・交通データ（全${Array.isArray(context.competitorData) ? context.competitorData.length : 0}件）\n${formatCompetitorData(context.competitorData)}` : 'データなし'}
 
-${context.facilityData ? `### 周辺施設データ\n${JSON.stringify(context.facilityData, null, 2).substring(0, 2000)}` : '周辺施設: データなし'}
+${context.facilityData ? `### 周辺施設データ\n${JSON.stringify(context.facilityData, null, 2).substring(0, 3000)}` : '周辺施設: データなし'}
 
-${context.populationData ? `### 人口統計データ\n${JSON.stringify(context.populationData, null, 2).substring(0, 2000)}` : '人口統計: なし'}
+${context.populationData ? `### 人口統計データ\n${JSON.stringify(context.populationData, null, 2).substring(0, 3000)}` : '人口統計: なし'}
 
 ## 看板設置の評価基準
 1. **交通量**: 幹線道路沿い、主要交差点近くの通行量

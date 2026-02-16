@@ -182,20 +182,40 @@ export async function analyzeQuery(params: AnalyzeParams): Promise<AnalysisResul
     }
   }
 
-  const locations: LocationResult[] = parsed.locations.map((loc: any) => ({
-    name: loc.name || '',
-    prefecture: loc.prefecture || prefecture || '',
-    city: loc.city || '',
-    lat: loc.lat || 0,
-    lng: loc.lng || 0,
-    score: loc.score || 0,
-    reasons: loc.reasons || [],
-    population: loc.population,
-    competitorCount: loc.competitorCount,
-    searchDemand: loc.searchDemand,
-    trafficVolume: loc.trafficVolume,
-    additionalInfo: loc.additionalInfo || {},
-  }));
+  // Google Placesの競合データから各候補地の実際の競合数を計算
+  const competitorList: any[] = Array.isArray(results.competitors) ? results.competitors : [];
+
+  const locations: LocationResult[] = parsed.locations.map((loc: any) => {
+    let competitorCount = loc.competitorCount;
+    // Places APIのデータがある場合、実際の競合数で補正
+    if (competitorList.length > 0 && loc.lat && loc.lng) {
+      const nearbyCompetitors = competitorList.filter((c: any) => {
+        if (!c.geometry?.location) return false;
+        const dlat = c.geometry.location.lat - loc.lat;
+        const dlng = c.geometry.location.lng - loc.lng;
+        // 約5km圏内の競合をカウント（緯度経度の差で近似）
+        return Math.sqrt(dlat * dlat + dlng * dlng) < 0.045;
+      });
+      if (nearbyCompetitors.length > 0) {
+        competitorCount = nearbyCompetitors.length;
+      }
+    }
+
+    return {
+      name: loc.name || '',
+      prefecture: loc.prefecture || prefecture || '',
+      city: loc.city || '',
+      lat: loc.lat || 0,
+      lng: loc.lng || 0,
+      score: loc.score || 0,
+      reasons: loc.reasons || [],
+      population: loc.population,
+      competitorCount,
+      searchDemand: loc.searchDemand,
+      trafficVolume: loc.trafficVolume,
+      additionalInfo: loc.additionalInfo || {},
+    };
+  });
 
   return {
     query,
