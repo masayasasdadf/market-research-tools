@@ -61,6 +61,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isVercel, setIsVercel] = useState(false);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -71,6 +72,9 @@ export default function SettingsPage() {
           initialKeys[field.key] = data.keys?.[field.key] || '';
         });
         setKeys(initialKeys);
+        if (data.isVercel) {
+          setIsVercel(true);
+        }
       })
       .catch(() => setMessage({ type: 'error', text: '設定の読み込みに失敗しました' }))
       .finally(() => setLoading(false));
@@ -97,7 +101,12 @@ export default function SettingsPage() {
         });
         setKeys(updatedKeys);
       } else {
-        setMessage({ type: 'error', text: '保存に失敗しました' });
+        const errorData = await res.json().catch(() => null);
+        if (errorData?.isVercel) {
+          setMessage({ type: 'error', text: 'Vercel環境ではUIからの保存はできません。Vercelダッシュボードの環境変数に設定してください（下記参照）。' });
+        } else {
+          setMessage({ type: 'error', text: '保存に失敗しました' });
+        }
       }
     } catch {
       setMessage({ type: 'error', text: '通信エラーが発生しました' });
@@ -134,6 +143,27 @@ export default function SettingsPage() {
                 その他のAPIキーを追加すると、より精度の高い分析が可能になります。
               </p>
             </div>
+
+            {isVercel && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
+                <h2 className="font-semibold text-amber-800 mb-1">Vercel環境での設定方法</h2>
+                <p className="text-sm text-amber-700 mb-2">
+                  Vercel環境ではファイルシステムが読み取り専用のため、UIからAPIキーを保存できません。
+                  代わりに <strong>Vercelダッシュボード</strong> の環境変数に設定してください。
+                </p>
+                <div className="bg-white rounded border border-amber-200 p-3 text-xs font-mono text-amber-900 space-y-1">
+                  <div>GEMINI_API_KEY=&lt;your-gemini-api-key&gt;</div>
+                  <div>ESTAT_APP_ID=&lt;your-estat-app-id&gt;</div>
+                  <div>GOOGLE_PLACES_API_KEY=&lt;your-google-places-api-key&gt;</div>
+                  <div>GOOGLE_ADS_API_KEY=&lt;your-google-ads-api-key&gt;</div>
+                  <div>GOOGLE_ADS_DEVELOPER_TOKEN=&lt;your-developer-token&gt;</div>
+                  <div>GOOGLE_ADS_CUSTOMER_ID=&lt;your-customer-id&gt;</div>
+                </div>
+                <p className="text-xs text-amber-600 mt-2">
+                  Vercelダッシュボード → プロジェクト → Settings → Environment Variables で設定し、再デプロイしてください。
+                </p>
+              </div>
+            )}
 
             {message && (
               <div

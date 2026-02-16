@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getApiKeys, saveApiKeys } from '@/lib/api-keys';
+import { getApiKeys, saveApiKeys, isVercelEnvironment } from '@/lib/api-keys';
 import { ApiKeys } from '@/types';
 
 export async function GET() {
   const keys = getApiKeys();
+  const isVercel = isVercelEnvironment();
   // マスク処理: APIキーの先頭4文字以外を伏せる
   const masked: Record<string, string> = {};
   for (const [key, value] of Object.entries(keys)) {
@@ -13,7 +14,11 @@ export async function GET() {
       masked[key] = value ? '****' : '';
     }
   }
-  return NextResponse.json({ keys: masked, hasKeys: Object.values(keys).some(v => v !== '') });
+  return NextResponse.json({
+    keys: masked,
+    hasKeys: Object.values(keys).some(v => v !== ''),
+    isVercel,
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -32,6 +37,16 @@ export async function POST(request: NextRequest) {
     saveApiKeys(newKeys);
     return NextResponse.json({ success: true });
   } catch (error) {
-    return NextResponse.json({ error: 'Failed to save API keys' }, { status: 500 });
+    const isVercel = isVercelEnvironment();
+    if (isVercel) {
+      return NextResponse.json(
+        {
+          error: 'Vercel環境ではUIからのAPI キー保存はできません。Vercelダッシュボードの環境変数に設定してください。',
+          isVercel: true,
+        },
+        { status: 400 }
+      );
+    }
+    return NextResponse.json({ error: 'APIキーの保存に失敗しました' }, { status: 500 });
   }
 }
