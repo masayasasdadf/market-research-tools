@@ -60,7 +60,7 @@ export default function LocationCard({ location, index, isSelected, onClick }: L
                 <span className="font-semibold">{location.population.toLocaleString()}人</span>
               </div>
             )}
-            {location.competitorCount !== undefined && (
+            {location.competitorCount !== undefined && location.competitorCount > 0 && (
               <div className="bg-gray-50 rounded p-1.5">
                 <span className="text-gray-500">競合: </span>
                 <span className="font-semibold">{location.competitorCount}件</span>

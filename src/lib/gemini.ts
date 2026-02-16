@@ -164,6 +164,53 @@ ${context.populationData ? `### 人口統計データ\n${JSON.stringify(context.
 \`\`\``;
 }
 
+
+/**
+ * 一般的な市場調査・統計質問向けプロンプト
+ */
+export function buildGeneralResearchPrompt(context: AnalysisContext): string {
+  return `あなたは日本の市場調査・統計分析の専門家です。以下の質問に対して、必ず質問意図に沿って回答してください。
+
+## ユーザーの質問
+${context.query}
+
+## 対象地域
+${context.prefecture || '指定なし'}
+
+## 利用可能なデータ
+${context.populationData ? `### 人口統計データ
+${JSON.stringify(context.populationData, null, 2).substring(0, 3500)}` : '人口統計: データなし'}
+
+${context.searchDemandData ? `### 検索需要データ
+${JSON.stringify(context.searchDemandData, null, 2).substring(0, 2200)}` : '検索需要: データなし'}
+
+${context.facilityData ? `### 産業・施設データ
+${JSON.stringify(context.facilityData, null, 2).substring(0, 2200)}` : '産業・施設データ: データなし'}
+
+${context.competitorData ? `### 地点・道路・施設データ
+${JSON.stringify(context.competitorData, null, 2).substring(0, 2200)}` : '地点・道路・施設データ: データなし'}
+
+## 重要ルール
+- 「人口増減」を聞かれたら、出店候補地ではなく人口の増減と傾向を答える。
+- 「交通量の多い道路」を聞かれたら、道路名・根拠・推定重要度を答える。
+- 不足データがある場合は、その不足を明記しつつ可能な範囲で回答する。
+- 必ず有効なJSONのみを返す。
+
+## 出力形式
+\`\`\`json
+{
+  "summary": "質問への直接回答（200〜400文字）",
+  "insights": [
+    "重要ポイント1",
+    "重要ポイント2",
+    "重要ポイント3"
+  ],
+  "locations": []
+}
+\`\`\`
+`;
+}
+
 /**
  * GeminiレスポンスからJSON部分を抽出
  */
@@ -194,6 +241,7 @@ export function extractJsonFromResponse(text: string): any {
 
 const SYSTEM_INSTRUCTION = `あなたは日本の市場調査・ビジネス立地分析の専門AIアシスタントです。
 ユーザーの質問に対して、データに基づいた的確な分析と提案を行います。
+意図と異なる回答（例: 人口質問に出店候補を返す）は禁止です。
 回答は必ず日本語で行ってください。`;
 
 export { SYSTEM_INSTRUCTION };
