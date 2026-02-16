@@ -17,8 +17,11 @@ export default function MapView({ locations, selectedIndex, onSelectLocation }: 
   useEffect(() => {
     if (!mapRef.current || typeof window === 'undefined') return;
 
+    let isMounted = true;
+
     const initMap = async () => {
       const L = (await import('leaflet')).default;
+      if (!isMounted || !mapRef.current) return;
 
       // Fix default marker icons
       delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -36,7 +39,7 @@ export default function MapView({ locations, selectedIndex, onSelectLocation }: 
         ? [locations[0].lat, locations[0].lng]
         : [33.5902, 130.4017]; // Default: Fukuoka
 
-      const map = L.map(mapRef.current!, {
+      const map = L.map(mapRef.current, {
         center: defaultCenter,
         zoom: 11,
       });
@@ -51,6 +54,7 @@ export default function MapView({ locations, selectedIndex, onSelectLocation }: 
       // Add markers
       markersRef.current = [];
       const bounds = L.latLngBounds([]);
+      let validPointCount = 0;
 
       locations.forEach((loc, index) => {
         if (!loc.lat || !loc.lng) return;
@@ -90,9 +94,10 @@ export default function MapView({ locations, selectedIndex, onSelectLocation }: 
         marker.on('click', () => onSelectLocation?.(index));
         markersRef.current.push(marker);
         bounds.extend([loc.lat, loc.lng]);
+        validPointCount += 1;
       });
 
-      if (locations.length > 0) {
+      if (validPointCount > 0) {
         map.fitBounds(bounds, { padding: [50, 50] });
       }
     };
@@ -100,12 +105,13 @@ export default function MapView({ locations, selectedIndex, onSelectLocation }: 
     initMap();
 
     return () => {
+      isMounted = false;
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
       }
     };
-  }, [locations, selectedIndex]);
+  }, [locations, selectedIndex, onSelectLocation]);
 
   return (
     <div

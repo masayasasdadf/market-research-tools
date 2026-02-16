@@ -89,7 +89,9 @@ function estimateSearchDemand(keywords: string[]): SearchDemandResult {
     // キーワードの特性に基づく簡易推定
     const baseVolume = keyword.length > 6 ? 500 : 2000;
     const localMultiplier = keyword.includes('県') || keyword.includes('市') ? 0.3 : 1.0;
-    const estimated = Math.round(baseVolume * localMultiplier * (0.5 + Math.random()));
+    const keywordSeed = Array.from(keyword).reduce((sum, c) => sum + c.charCodeAt(0), 0);
+    const variation = 0.75 + (keywordSeed % 50) / 100;
+    const estimated = Math.round(baseVolume * localMultiplier * variation);
 
     return {
       keyword,

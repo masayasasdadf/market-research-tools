@@ -209,7 +209,18 @@ export default function SettingsPage() {
                   <a href="https://developers.google.com/google-ads/api/docs/get-started/introduction" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                     Google Ads API 公式ドキュメント
                   </a>
-                  を参照
+                  を参照（認証が重く、運用コストが上がりやすいです）
+                </li>
+                <li>
+                  <strong>代替API（無料〜低コスト）:</strong>{' '}
+                  <a href="https://opendata.resas-portal.go.jp/" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                    RESAS API
+                  </a>
+                  （無料枠あり・地域需要の補助分析に有効）、
+                  <a href="https://api.e-stat.go.jp/" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline ml-1">
+                    e-Stat API
+                  </a>
+                  （公的統計で継続利用しやすい）
                 </li>
               </ul>
             </div>

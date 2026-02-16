@@ -24,7 +24,7 @@ export interface LocationResult {
 
 export interface AnalysisResult {
   query: string;
-  type: 'store_location' | 'signage_location';
+  type: 'store_location' | 'signage_location' | 'general';
   summary: string;
   locations: LocationResult[];
   timestamp: string;
