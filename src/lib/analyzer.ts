@@ -5,7 +5,7 @@
 
 import { ApiKeys, AnalysisResult, LocationResult } from '@/types';
 import { PREFECTURE_CODES, getPopulationByArea, getBusinessStats } from './estat';
-import { textSearch, countCompetitors, getAreaFacilities } from './google-places';
+import { textSearch, nearbySearch, getAreaFacilities } from './google-places';
 import { getKeywordMetrics } from './google-ads';
 import {
   generateContent,
@@ -159,47 +159,49 @@ export async function analyzeQuery(params: AnalyzeParams): Promise<AnalysisResul
     };
   }
 
-  // Google Places で各候補地の詳細情報を補強
+  // Google Places で各候補地の競合数と周辺情報を取得
+  // 各候補地を中心にnearbySearchで実際の競合店を検索（重複排除付き）
+  const allCompetitorsByLocation: Map<number, any[]> = new Map();
+
   if (keys.googlePlacesApiKey && parsed.locations.length > 0) {
-    for (const loc of parsed.locations) {
-      if (loc.lat && loc.lng) {
-        try {
-          const facilities = await getAreaFacilities(
-            keys.googlePlacesApiKey,
-            loc.lat,
-            loc.lng,
-            3000
-          );
-          if (facilities.stations.length > 0) {
-            loc.additionalInfo = loc.additionalInfo || {};
-            loc.additionalInfo['周辺駅'] = facilities.stations
-              .slice(0, 3)
-              .map((s: any) => s.name)
-              .join('、');
-          }
-        } catch { /* 補強データ取得失敗は無視 */ }
-      }
-    }
+    const competitorKeyword = businessKeywords.join(' ');
+
+    await Promise.all(parsed.locations.map(async (loc: any, index: number) => {
+      if (!loc.lat || !loc.lng) return;
+
+      try {
+        // 各候補地を中心に半径5kmで競合をnearbySearch
+        const [competitors, facilities] = await Promise.all([
+          nearbySearch({
+            apiKey: keys.googlePlacesApiKey,
+            lat: loc.lat,
+            lng: loc.lng,
+            radius: 5000,
+            keyword: competitorKeyword,
+          }),
+          getAreaFacilities(keys.googlePlacesApiKey, loc.lat, loc.lng, 3000),
+        ]);
+
+        allCompetitorsByLocation.set(index, competitors);
+
+        // 周辺駅情報を補強
+        if (facilities.stations.length > 0) {
+          loc.additionalInfo = loc.additionalInfo || {};
+          loc.additionalInfo['周辺駅'] = facilities.stations
+            .slice(0, 3)
+            .map((s: any) => s.name)
+            .join('、');
+        }
+      } catch { /* 補強データ取得失敗は無視 */ }
+    }));
   }
 
-  // Google Placesの競合データから各候補地の実際の競合数を計算
-  const competitorList: any[] = Array.isArray(results.competitors) ? results.competitors : [];
-
-  const locations: LocationResult[] = parsed.locations.map((loc: any) => {
-    let competitorCount = loc.competitorCount;
-    // Places APIのデータがある場合、実際の競合数で補正
-    if (competitorList.length > 0 && loc.lat && loc.lng) {
-      const nearbyCompetitors = competitorList.filter((c: any) => {
-        if (!c.geometry?.location) return false;
-        const dlat = c.geometry.location.lat - loc.lat;
-        const dlng = c.geometry.location.lng - loc.lng;
-        // 約5km圏内の競合をカウント（緯度経度の差で近似）
-        return Math.sqrt(dlat * dlat + dlng * dlng) < 0.045;
-      });
-      if (nearbyCompetitors.length > 0) {
-        competitorCount = nearbyCompetitors.length;
-      }
-    }
+  const locations: LocationResult[] = parsed.locations.map((loc: any, index: number) => {
+    // Places APIで実際に取得した競合数を使用（取得できなかった場合はGeminiの値を使用）
+    const localCompetitors = allCompetitorsByLocation.get(index);
+    const competitorCount = localCompetitors !== undefined
+      ? localCompetitors.length
+      : (loc.competitorCount || 0);
 
     return {
       name: loc.name || '',
