@@ -58,48 +58,83 @@ const API_KEY_FIELDS: ApiKeyField[] = [
 
 export default function SettingsPage() {
   const [keys, setKeys] = useState<Record<string, string>>({});
+  const [originalMasked, setOriginalMasked] = useState<Record<string, string>>({});
+  const [dirtyFields, setDirtyFields] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [isVercel, setIsVercel] = useState(false);
 
+  const loadKeys = async () => {
+    try {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      const initialKeys: Record<string, string> = {};
+      API_KEY_FIELDS.forEach(field => {
+        initialKeys[field.key] = data.keys?.[field.key] || '';
+      });
+      setKeys(initialKeys);
+      setOriginalMasked(initialKeys);
+      setDirtyFields(new Set());
+      if (data.isVercel) {
+        setIsVercel(true);
+      }
+    } catch {
+      setMessage({ type: 'error', text: '設定の読み込みに失敗しました' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    fetch('/api/settings')
-      .then(res => res.json())
-      .then(data => {
-        const initialKeys: Record<string, string> = {};
-        API_KEY_FIELDS.forEach(field => {
-          initialKeys[field.key] = data.keys?.[field.key] || '';
-        });
-        setKeys(initialKeys);
-        if (data.isVercel) {
-          setIsVercel(true);
-        }
-      })
-      .catch(() => setMessage({ type: 'error', text: '設定の読み込みに失敗しました' }))
-      .finally(() => setLoading(false));
+    loadKeys();
   }, []);
+
+  const handleFieldChange = (fieldKey: string, value: string) => {
+    setKeys(prev => ({ ...prev, [fieldKey]: value }));
+    setDirtyFields(prev => new Set(prev).add(fieldKey));
+  };
+
+  const handleFieldFocus = (fieldKey: string) => {
+    // マスクされた値（****で終わる）がある場合、フォーカス時にクリアして編集しやすくする
+    if (keys[fieldKey]?.endsWith('****') && !dirtyFields.has(fieldKey)) {
+      setKeys(prev => ({ ...prev, [fieldKey]: '' }));
+    }
+  };
+
+  const handleFieldBlur = (fieldKey: string) => {
+    // 変更されていない場合、元のマスク値を復元する
+    if (!dirtyFields.has(fieldKey) && keys[fieldKey] === '') {
+      setKeys(prev => ({ ...prev, [fieldKey]: originalMasked[fieldKey] || '' }));
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
     setMessage(null);
 
+    // 変更されたフィールドのみ送信
+    const changedKeys: Record<string, string> = {};
+    Array.from(dirtyFields).forEach(fieldKey => {
+      changedKeys[fieldKey] = keys[fieldKey] || '';
+    });
+
+    if (Object.keys(changedKeys).length === 0) {
+      setMessage({ type: 'error', text: '変更がありません' });
+      setSaving(false);
+      return;
+    }
+
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keys }),
+        body: JSON.stringify({ keys: changedKeys }),
       });
 
       if (res.ok) {
         setMessage({ type: 'success', text: 'APIキーを保存しました' });
-        // Reload masked keys
-        const data = await fetch('/api/settings').then(r => r.json());
-        const updatedKeys: Record<string, string> = {};
-        API_KEY_FIELDS.forEach(field => {
-          updatedKeys[field.key] = data.keys?.[field.key] || '';
-        });
-        setKeys(updatedKeys);
+        await loadKeys();
       } else {
         const errorData = await res.json().catch(() => null);
         if (errorData?.isVercel) {
@@ -192,8 +227,14 @@ export default function SettingsPage() {
                   <input
                     type="password"
                     value={keys[field.key] || ''}
-                    onChange={e => setKeys(prev => ({ ...prev, [field.key]: e.target.value }))}
-                    placeholder={field.placeholder}
+                    onChange={e => handleFieldChange(field.key, e.target.value)}
+                    onFocus={() => handleFieldFocus(field.key)}
+                    onBlur={() => handleFieldBlur(field.key)}
+                    placeholder={
+                      originalMasked[field.key] && originalMasked[field.key] !== ''
+                        ? `設定済み (${originalMasked[field.key]})`
+                        : field.placeholder
+                    }
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
@@ -203,10 +244,10 @@ export default function SettingsPage() {
             <div className="mt-8 flex justify-end">
               <button
                 onClick={handleSave}
-                disabled={saving}
+                disabled={saving || dirtyFields.size === 0}
                 className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded-lg px-8 py-3 font-medium transition-colors"
               >
-                {saving ? '保存中...' : '保存する'}
+                {saving ? '保存中...' : dirtyFields.size > 0 ? '保存する' : '変更なし'}
               </button>
             </div>
 

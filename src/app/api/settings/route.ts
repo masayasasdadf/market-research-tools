@@ -2,6 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getApiKeys, saveApiKeys, isVercelEnvironment } from '@/lib/api-keys';
 import { ApiKeys } from '@/types';
 
+const VALID_KEYS: (keyof ApiKeys)[] = [
+  'estatAppId',
+  'geminiApiKey',
+  'googlePlacesApiKey',
+  'googleAdsApiKey',
+  'googleAdsDeveloperToken',
+  'googleAdsCustomerId',
+];
+
 export async function GET() {
   const keys = getApiKeys();
   const isVercel = isVercelEnvironment();
@@ -22,31 +31,32 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  // Vercel環境チェックを事前に行う
+  if (isVercelEnvironment()) {
+    return NextResponse.json(
+      {
+        error: 'Vercel環境ではUIからのAPI キー保存はできません。Vercelダッシュボードの環境変数に設定してください。',
+        isVercel: true,
+      },
+      { status: 400 }
+    );
+  }
+
   try {
     const body = await request.json();
     const currentKeys = getApiKeys();
-
-    // 値が '****' で終わるフィールドは既存値を保持
     const newKeys: ApiKeys = { ...currentKeys };
+
+    // クライアントから送られた変更済みフィールドのみ更新
     for (const [key, value] of Object.entries(body.keys || {})) {
-      if (typeof value === 'string' && !value.endsWith('****') && value !== '') {
-        (newKeys as any)[key] = value;
+      if (typeof value === 'string' && VALID_KEYS.includes(key as keyof ApiKeys)) {
+        newKeys[key as keyof ApiKeys] = value;
       }
     }
 
     saveApiKeys(newKeys);
     return NextResponse.json({ success: true });
-  } catch (error) {
-    const isVercel = isVercelEnvironment();
-    if (isVercel) {
-      return NextResponse.json(
-        {
-          error: 'Vercel環境ではUIからのAPI キー保存はできません。Vercelダッシュボードの環境変数に設定してください。',
-          isVercel: true,
-        },
-        { status: 400 }
-      );
-    }
+  } catch {
     return NextResponse.json({ error: 'APIキーの保存に失敗しました' }, { status: 500 });
   }
 }
