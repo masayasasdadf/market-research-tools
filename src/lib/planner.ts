@@ -1,16 +1,10 @@
 /**
  * Planner (計画フェーズ)
- * Geminiに「どう調べるか」の計画だけを作らせる
- * 実際のAPI実行は一切しない
+ * コードで確実に分類・計画を作る。Geminiは呼ばない。
  */
 
-import { ResearchPlan } from '@/types';
-import { generateContent, extractJsonFromResponse } from './gemini';
+import { ResearchPlan, ResearchTask } from '@/types';
 import { PREFECTURE_CODES } from './estat';
-
-const PLANNER_SYSTEM_INSTRUCTION = `あなたは市場調査の計画立案専門家です。
-ユーザーの質問を分析し、どのデータソースを使ってどのように調べるべきかを計画するだけです。
-実際のデータ取得や分析は行いません。計画のみをJSON形式で出力してください。`;
 
 /**
  * クエリから都道府県名を抽出
@@ -46,119 +40,180 @@ function extractPrefecture(query: string): string | undefined {
  * 市区町村名を抽出
  */
 function extractCity(query: string): string | undefined {
-  const cityPatterns = [
-    /([^\s]+?[市区町村])/g,
-    /早良区/,
-    /博多区/,
-    /中央区/,
-    /東区/,
-    /西区/,
-    /南区/,
-    /城南区/,
+  // 具体的な区名を先にチェック
+  const specificAreas = [
+    '早良区', '博多区', '中央区', '東区', '西区', '南区', '城南区',
+    '北区', '港区', '渋谷区', '新宿区', '千代田区', '品川区', '大田区',
+    '世田谷区', '目黒区', '杉並区', '練馬区', '板橋区', '豊島区',
+    '中野区', '荒川区', '台東区', '墨田区', '江東区', '足立区', '葛飾区', '江戸川区',
   ];
-
-  for (const pattern of cityPatterns) {
-    const match = query.match(pattern);
-    if (match) return match[0];
+  for (const area of specificAreas) {
+    if (query.includes(area)) return area;
   }
+
+  // 一般的な市区町村パターン
+  const match = query.match(/([^\s、。で]+?[市町村])/);
+  if (match) return match[0];
 
   return undefined;
 }
 
 /**
- * Geminiで調査計画を生成
+ * クエリの種別を判定（コードで確実に分類）
  */
-export async function createResearchPlan(
-  geminiApiKey: string,
-  query: string
-): Promise<ResearchPlan> {
-  const prefecture = extractPrefecture(query);
-  const city = extractCity(query);
+function classifyIntent(query: string): 'store_location' | 'signage_location' | 'general_research' {
+  const signageKeywords = ['看板', 'サイン', '広告', '掲示', 'サイネージ', '屋外広告', 'ビルボード'];
+  const storeKeywords = ['出店', '店舗', '開業', '開店', '候補地', '適した場所', '最適なエリア', '立地'];
 
-  const prompt = `ユーザーの質問を分析し、市場調査の計画を立ててください。
+  // 汎用調査キーワード（出店・看板ではない質問）
+  const generalKeywords = [
+    '人口', '増減', 'トレンド', '推移', '交通量', '道路', '通行量',
+    '世帯', '年齢', '高齢化', '若者', '住民', '統計', 'データ',
+    '比較', '違い', '特徴', '教えて', '調べて',
+  ];
 
-## ユーザーの質問
-${query}
+  if (signageKeywords.some(k => query.includes(k))) return 'signage_location';
+  if (storeKeywords.some(k => query.includes(k))) return 'store_location';
 
-## 利用可能なデータソース
-1. **estat_population**: e-Stat人口統計（市区町村別人口、世帯数、昼夜人口、年齢構成など）
-2. **estat_business**: e-Stat事業所統計（業種別事業所数、従業員数など）
-3. **places_competitors**: Google Places競合検索（特定業種の店舗検索）
-4. **places_facilities**: Google Places施設検索（駅、道路、公共施設など）
-5. **places_nearby**: Google Places周辺検索（特定地点の周辺情報）
-6. **ads_keywords**: Google Ads検索需要（キーワード検索ボリューム）
-7. **traffic_analysis**: 交通量分析（POI密度などから推定）
-8. **demographic_trends**: 人口動態分析（増減トレンドなど）
+  // 出店キーワードがなくて汎用キーワードがあれば general
+  if (generalKeywords.some(k => query.includes(k))) return 'general_research';
 
-## 出力形式
-以下のJSON形式で調査計画を出力してください。実際のデータ取得は行わず、計画のみを作成してください。
+  // どれにも該当しない場合、ビジネス系っぽければ store、それ以外は general
+  const businessHints = ['需要', '競合', 'エリア'];
+  if (businessHints.some(k => query.includes(k))) return 'store_location';
 
-\`\`\`json
-{
-  "query": "元の質問",
-  "intent": "store_location | signage_location | general_research",
-  "area": {
-    "prefecture": "都道府県名（あれば）",
-    "city": "市区町村名（あれば）",
-    "radius": 調査半径（メートル、推奨値）
-  },
-  "tasks": [
-    {
-      "type": "estat_population",
-      "params": {
-        "metrics": ["night_pop", "day_pop", "households"]
-      },
-      "required": true
-    },
-    {
-      "type": "places_competitors",
-      "params": {
-        "keyword": "業種キーワード",
-        "radius": 5000
-      },
-      "required": false
-    }
-  ],
-  "outputFormat": "locations | data_summary | mixed"
+  return 'general_research';
 }
-\`\`\`
 
-**重要な判断基準:**
-- 「出店」「店舗」「開業」→ intent: "store_location"
-- 「看板」「広告」→ intent: "signage_location"
-- 「人口」「増減」「トレンド」「交通量」など → intent: "general_research"
-- 「競合0」を避けるため、places_competitorsは広めのradius（5000m以上）を設定
-- 地域が明示されている場合は必ずarea.prefecture/cityを設定
-- outputFormat: 出店候補地→"locations", データ分析→"data_summary", 両方→"mixed"`;
+/**
+ * クエリからビジネスキーワードを抽出
+ */
+function extractBusinessKeywords(query: string): string[] {
+  const stopWords = [
+    'で', 'の', 'に', 'を', 'が', 'は', 'と', 'も', 'から', 'まで', 'する',
+    'て', 'た', 'ある', 'いる', 'ない', 'この', 'その', 'どの', 'どう',
+    '出店', '適した', 'エリア', '場所', 'いくつか', '出して', 'ください',
+    '需要', '高く', '競合', '少ない', '設置', '看板', 'ピックアップ', '複数',
+    '教えて', '調べて', '知りたい', '分析', '最適', '人口', '増減', '地域別',
+    '交通量', '多い', '道路',
+  ];
 
-  const response = await generateContent(geminiApiKey, prompt, PLANNER_SYSTEM_INSTRUCTION);
-  const parsed = extractJsonFromResponse(response);
+  const prefNames = Object.keys(PREFECTURE_CODES);
 
-  if (!parsed || !parsed.tasks) {
-    // パース失敗時は最小限のフォールバック計画を作成
-    return {
-      query,
-      intent: 'general_research',
-      area: prefecture ? { prefecture, radius: 5000 } : undefined,
-      tasks: [
-        {
-          type: 'estat_population',
-          params: { metrics: ['total'] },
+  const words = query.split(/[\s、。・「」（）\n]+/).filter(w =>
+    w.length >= 2 &&
+    !stopWords.some(s => w === s) &&
+    !prefNames.some(p => w === p) &&
+    !w.match(/^[ぁ-ん]{1,2}$/) // 短いひらがなを除外
+  );
+
+  return words.length > 0 ? words : [];
+}
+
+/**
+ * intentとクエリ内容からタスクリストを生成（コード決定）
+ */
+function buildTasks(
+  intent: 'store_location' | 'signage_location' | 'general_research',
+  query: string,
+  businessKeywords: string[],
+  prefecture?: string,
+): ResearchTask[] {
+  const tasks: ResearchTask[] = [];
+
+  switch (intent) {
+    case 'store_location':
+      // 出店分析: 人口 + 競合 + 検索需要
+      if (prefecture) {
+        tasks.push({ type: 'estat_population', params: {}, required: true });
+        tasks.push({ type: 'estat_business', params: {}, required: false });
+      }
+      if (businessKeywords.length > 0 && prefecture) {
+        tasks.push({
+          type: 'places_competitors',
+          params: { keyword: businessKeywords.join(' '), radius: 5000 },
+          required: true,
+        });
+      }
+      tasks.push({
+        type: 'ads_keywords',
+        params: { keywords: businessKeywords.map(k => prefecture ? `${k} ${prefecture}` : k) },
+        required: false,
+      });
+      break;
+
+    case 'signage_location':
+      // 看板分析: 人口 + 交通・施設情報
+      if (prefecture) {
+        tasks.push({ type: 'estat_population', params: {}, required: true });
+      }
+      if (businessKeywords.length > 0 && prefecture) {
+        tasks.push({
+          type: 'places_competitors',
+          params: { keyword: `${businessKeywords.join(' ')} ${prefecture}`, radius: 5000 },
           required: false,
-        },
-      ],
-      outputFormat: 'data_summary',
-    };
+        });
+      }
+      break;
+
+    case 'general_research':
+      // 汎用調査: 質問内容から必要なデータを判断
+      if (prefecture) {
+        tasks.push({ type: 'estat_population', params: {}, required: true });
+      }
+
+      // 交通量・道路に関する質問
+      if (query.match(/交通量|道路|通行|車|幹線/)) {
+        if (businessKeywords.length > 0 || prefecture) {
+          tasks.push({
+            type: 'places_competitors',
+            params: {
+              keyword: `主要道路 交差点 ${prefecture || ''}`.trim(),
+              radius: 5000,
+            },
+            required: false,
+          });
+        }
+      }
+
+      // 事業所・産業に関する質問
+      if (query.match(/事業所|産業|企業|会社|商業/)) {
+        if (prefecture) {
+          tasks.push({ type: 'estat_business', params: {}, required: false });
+        }
+      }
+      break;
   }
 
-  // area情報の補強
-  if (!parsed.area && (prefecture || city)) {
-    parsed.area = {
+  return tasks;
+}
+
+/**
+ * 調査計画を生成（コードのみ、Geminiは使わない）
+ */
+export function createResearchPlan(query: string): ResearchPlan {
+  const prefecture = extractPrefecture(query);
+  const city = extractCity(query);
+  const intent = classifyIntent(query);
+  const businessKeywords = extractBusinessKeywords(query);
+  const tasks = buildTasks(intent, query, businessKeywords, prefecture);
+
+  let outputFormat: 'locations' | 'data_summary' | 'mixed';
+  if (intent === 'general_research') {
+    outputFormat = 'data_summary';
+  } else {
+    outputFormat = 'locations';
+  }
+
+  return {
+    query,
+    intent,
+    area: {
       prefecture,
       city,
       radius: 5000,
-    };
-  }
-
-  return parsed as ResearchPlan;
+    },
+    tasks,
+    outputFormat,
+  };
 }

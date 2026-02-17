@@ -1,13 +1,15 @@
 /**
  * 市場分析オーケストレーター（3フェーズアーキテクチャ）
- * Phase 1: Planner - Geminiに調査計画を作らせる
+ *
+ * Phase 1: Planner  - コードで確実に分類・計画（Gemini使わない）
  * Phase 2: Executor - コードがAPIを実行（検証ゲート付き）
- * Phase 3: Reporter - Geminiに結果の解釈だけさせる
+ * Phase 3: Reporter - Geminiに結果の解釈だけさせる（1回のみ）
+ *         + enrich  - 出店/看板の場合、候補地ごとにPlaces補強
  */
 
 import { ApiKeys, AnalysisResult } from '@/types';
 import { createResearchPlan } from './planner';
-import { executePlan } from './executor';
+import { executePlan, enrichLocations } from './executor';
 import { generateReport } from './reporter';
 
 interface AnalyzeParams {
@@ -16,7 +18,23 @@ interface AnalyzeParams {
 }
 
 /**
- * メイン分析関数（3フェーズ）
+ * クエリからビジネスキーワードを抽出（enrich用）
+ */
+function extractBusinessKeywords(query: string): string[] {
+  const stopWords = [
+    'で', 'の', 'に', 'を', 'が', 'は', 'と', 'も', 'から', 'まで',
+    '出店', '適した', 'エリア', '場所', 'いくつか', '出して', 'ください',
+    '需要', '高く', '競合', '少ない', '設置', '看板', 'ピックアップ', '複数',
+    '教えて', '調べて', '知りたい', '分析', '最適',
+  ];
+  const words = query.split(/[\s、。・「」（）\n]+/).filter(w =>
+    w.length >= 2 && !stopWords.some(s => w === s)
+  );
+  return words.length > 0 ? words : [];
+}
+
+/**
+ * メイン分析関数
  */
 export async function analyzeQuery(params: AnalyzeParams): Promise<AnalysisResult> {
   const { query, keys } = params;
@@ -25,30 +43,25 @@ export async function analyzeQuery(params: AnalyzeParams): Promise<AnalysisResul
     throw new Error('Gemini APIキーが設定されていません。設定ページからAPIキーを入力してください。');
   }
 
-  console.log('=== Phase 1: Planning ===');
-  console.time('Phase 1');
+  // Phase 1: Planner（コードで即座に計画、Geminiは呼ばない）
+  const plan = createResearchPlan(query);
+  console.log(`[Planner] intent=${plan.intent}, tasks=${plan.tasks.length}, output=${plan.outputFormat}`);
 
-  // Phase 1: Planner（計画）
-  const plan = await createResearchPlan(keys.geminiApiKey, query);
-  console.log(`[Planner] Intent: ${plan.intent}, Tasks: ${plan.tasks.length}, Output: ${plan.outputFormat}`);
-  console.timeEnd('Phase 1');
-
-  console.log('=== Phase 2: Execution ===');
-  console.time('Phase 2');
-
-  // Phase 2: Executor（実行）
+  // Phase 2: Executor（APIを実行、検証ゲート付き）
   const executorResults = await executePlan(plan, keys);
-  const successCount = executorResults.filter(r => r.gate.passed).length;
-  console.log(`[Executor] ${successCount}/${executorResults.length} tasks succeeded`);
-  console.timeEnd('Phase 2');
+  const ok = executorResults.filter(r => r.gate.passed).length;
+  console.log(`[Executor] ${ok}/${executorResults.length} tasks OK`);
 
-  console.log('=== Phase 3: Reporting ===');
-  console.time('Phase 3');
+  // Phase 3: Reporter（Geminiに解釈させる、1回のみ）
+  const result = await generateReport(keys.geminiApiKey, plan, executorResults);
+  console.log(`[Reporter] ${result.locations.length} locations, type=${result.type}`);
 
-  // Phase 3: Reporter（報告）
-  const analysisResult = await generateReport(keys.geminiApiKey, plan, executorResults);
-  console.log(`[Reporter] Report generated (${analysisResult.locations.length} locations)`);
-  console.timeEnd('Phase 3');
+  // 出店/看板の場合: 候補地ごとの競合数・周辺情報を実データで補強
+  if (result.locations.length > 0) {
+    const businessKeywords = extractBusinessKeywords(query);
+    result.locations = await enrichLocations(result.locations, keys, businessKeywords);
+    console.log(`[Enrich] ${result.locations.length} locations enriched`);
+  }
 
-  return analysisResult;
+  return result;
 }

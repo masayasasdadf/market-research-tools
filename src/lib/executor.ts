@@ -4,29 +4,15 @@
  * Geminiは一切使わず、コードが確実に実行
  */
 
-import { ApiKeys, ResearchTask, ExecutorResult, ValidationGate, TaskType, ResearchPlan } from '@/types';
+import { ApiKeys, ResearchTask, ExecutorResult, ValidationGate, TaskType, ResearchPlan, LocationResult } from '@/types';
 import { PREFECTURE_CODES, getPopulationByArea, getBusinessStats } from './estat';
 import { textSearch, nearbySearch, getAreaFacilities } from './google-places';
 import { getKeywordMetrics } from './google-ads';
 
-// 結果キャッシュ（同一セッション内での重複API呼び出しを防止）
-const resultCache = new Map<string, any>();
-
-/**
- * キャッシュキーを生成
- */
-function getCacheKey(taskType: TaskType, params: Record<string, any>): string {
-  return `${taskType}:${JSON.stringify(params)}`;
-}
-
 /**
  * 検証ゲート: 結果が妥当かチェック
  */
-function validateResult(
-  taskType: TaskType,
-  data: any,
-  retryAttempt: number
-): ValidationGate {
+function validateResult(taskType: TaskType, data: any): ValidationGate {
   let passed = true;
   let message = 'OK';
   let resultCount = 0;
@@ -38,9 +24,9 @@ function validateResult(
       resultCount = Array.isArray(data) ? data.length : 0;
       if (resultCount === 0) {
         passed = false;
-        message = '検索結果0件。radiusを拡大して再試行が必要です。';
+        message = '検索結果0件';
       } else {
-        message = `${resultCount}件取得成功`;
+        message = `${resultCount}件取得`;
       }
       break;
 
@@ -48,204 +34,135 @@ function validateResult(
     case 'estat_business':
       if (!data || data.error) {
         passed = false;
-        message = 'e-Stat API取得失敗';
+        message = 'e-Stat取得失敗';
       } else {
-        passed = true;
-        message = 'e-Statデータ取得成功';
+        message = 'e-Statデータ取得OK';
       }
       break;
 
     case 'ads_keywords':
       if (data && data.keywords) {
         resultCount = data.keywords.length;
-        message = `キーワード${resultCount}件取得`;
+        message = `キーワード${resultCount}件`;
       } else {
-        message = '検索需要データ取得（推定値）';
+        message = '検索需要データ取得(推定値)';
       }
       break;
 
     default:
-      message = 'データ取得完了';
+      message = '取得完了';
   }
 
-  return {
-    passed,
-    taskType,
-    resultCount,
-    retryAttempt,
-    message,
-  };
+  return { passed, taskType, resultCount, retryAttempt: 0, message };
 }
 
 /**
- * タスク実行（リトライ・検証ゲート付き）
+ * Places系タスクのリトライ（radius拡大、keyword簡略化）
  */
-async function executeTask(
-  task: ResearchTask,
-  keys: ApiKeys,
-  plan: ResearchPlan
-): Promise<ExecutorResult> {
-  const maxRetries = 3;
-  let retryAttempt = 0;
-  let currentParams = { ...task.params };
+async function executePlacesWithRetry(
+  apiKey: string,
+  keyword: string,
+  prefecture: string,
+  maxRetries: number = 2,
+): Promise<{ data: any; gate: ValidationGate }> {
+  let currentKeyword = keyword;
+  let currentRadius = 5000; // 使われないが記録用
 
-  while (retryAttempt <= maxRetries) {
-    const cacheKey = getCacheKey(task.type, currentParams);
-
-    // キャッシュチェック
-    if (resultCache.has(cacheKey)) {
-      const cachedData = resultCache.get(cacheKey);
-      const gate = validateResult(task.type, cachedData, retryAttempt);
-      return {
-        taskType: task.type,
-        data: cachedData,
-        gate,
-        cached: true,
-      };
-    }
-
-    // タスク実行
-    let data: any = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      data = await executeTaskOnce(task.type, currentParams, keys, plan);
+      const query = `${currentKeyword} ${prefecture}`;
+      const data = await textSearch({ apiKey, query, region: 'jp' });
+      const gate = validateResult('places_competitors', data);
+      gate.retryAttempt = attempt;
+
+      if (gate.passed) {
+        return { data, gate };
+      }
+
+      // リトライ: キーワード簡略化
+      console.warn(`[Executor] Places 0件 (attempt ${attempt + 1}), キーワード調整...`);
+      const words = currentKeyword.split(' ');
+      if (words.length > 1) {
+        currentKeyword = words[0]; // 最初のキーワードのみ
+      }
+      currentRadius = Math.floor(currentRadius * 1.5);
     } catch (error) {
-      console.error(`Executor error (${task.type}):`, error);
-      data = null;
+      console.error(`[Executor] Places error (attempt ${attempt + 1}):`, error);
     }
-
-    // 検証ゲート
-    const gate = validateResult(task.type, data, retryAttempt);
-
-    // キャッシュに保存
-    resultCache.set(cacheKey, data);
-
-    // 必須タスクでゲート失敗の場合はリトライ
-    if (task.required && !gate.passed && retryAttempt < maxRetries) {
-      console.warn(`Gate failed for ${task.type}, retrying with adjusted params...`);
-      currentParams = adjustParamsForRetry(task.type, currentParams, retryAttempt + 1);
-      retryAttempt++;
-      continue;
-    }
-
-    return {
-      taskType: task.type,
-      data,
-      gate,
-      cached: false,
-    };
   }
 
-  // 最大リトライ超過
   return {
-    taskType: task.type,
-    data: null,
-    gate: {
-      passed: false,
-      taskType: task.type,
-      resultCount: 0,
-      retryAttempt: maxRetries,
-      message: '最大リトライ回数超過',
-    },
-    cached: false,
+    data: [],
+    gate: { passed: false, taskType: 'places_competitors', resultCount: 0, retryAttempt: maxRetries, message: 'リトライ後も0件' },
   };
-}
-
-/**
- * パラメータ調整（リトライ時）
- */
-function adjustParamsForRetry(
-  taskType: TaskType,
-  params: Record<string, any>,
-  retryAttempt: number
-): Record<string, any> {
-  const adjusted = { ...params };
-
-  switch (taskType) {
-    case 'places_competitors':
-    case 'places_nearby':
-    case 'places_facilities':
-      // radiusを50%ずつ拡大
-      if (adjusted.radius) {
-        adjusted.radius = Math.floor(adjusted.radius * 1.5);
-      }
-      // keywordをより一般的に
-      if (adjusted.keyword && retryAttempt === 2) {
-        const keywords = adjusted.keyword.split(' ');
-        adjusted.keyword = keywords[0]; // 最初のキーワードのみ
-      }
-      break;
-  }
-
-  return adjusted;
 }
 
 /**
  * 個別タスク実行
  */
-async function executeTaskOnce(
-  taskType: TaskType,
-  params: Record<string, any>,
+async function executeTask(
+  task: ResearchTask,
   keys: ApiKeys,
-  plan: ResearchPlan
-): Promise<any> {
+  plan: ResearchPlan,
+): Promise<ExecutorResult> {
   const prefCode = plan.area?.prefecture ? PREFECTURE_CODES[plan.area.prefecture] : undefined;
 
-  switch (taskType) {
-    case 'estat_population':
-      if (!keys.estatAppId || !prefCode) return null;
-      return await getPopulationByArea(keys.estatAppId, prefCode);
-
-    case 'estat_business':
-      if (!keys.estatAppId || !prefCode) return null;
-      return await getBusinessStats(keys.estatAppId, prefCode);
-
-    case 'places_competitors':
-      if (!keys.googlePlacesApiKey) return null;
-      const query = params.query || `${params.keyword} ${plan.area?.prefecture || ''}`;
-      return await textSearch({
-        apiKey: keys.googlePlacesApiKey,
-        query,
-        region: 'jp',
-      });
-
-    case 'places_nearby':
-      if (!keys.googlePlacesApiKey || !plan.area?.lat || !plan.area?.lng) return null;
-      return await nearbySearch({
-        apiKey: keys.googlePlacesApiKey,
-        lat: plan.area.lat,
-        lng: plan.area.lng,
-        radius: params.radius || 5000,
-        keyword: params.keyword,
-      });
-
-    case 'places_facilities':
-      if (!keys.googlePlacesApiKey || !plan.area?.lat || !plan.area?.lng) return null;
-      return await getAreaFacilities(
-        keys.googlePlacesApiKey,
-        plan.area.lat,
-        plan.area.lng,
-        params.radius || 3000
-      );
-
-    case 'ads_keywords':
-      if (!keys.googleAdsApiKey || !keys.googleAdsDeveloperToken || !keys.googleAdsCustomerId) {
-        return null;
+  try {
+    switch (task.type) {
+      case 'estat_population': {
+        if (!keys.estatAppId || !prefCode) {
+          return { taskType: task.type, data: null, gate: validateResult(task.type, null), cached: false };
+        }
+        const data = await getPopulationByArea(keys.estatAppId, prefCode);
+        return { taskType: task.type, data, gate: validateResult(task.type, data), cached: false };
       }
-      const keywords = params.keywords || [plan.query];
-      return await getKeywordMetrics(
-        keys.googleAdsDeveloperToken,
-        keys.googleAdsCustomerId,
-        keys.googleAdsApiKey,
-        keywords
-      );
 
-    case 'traffic_analysis':
-    case 'demographic_trends':
-      // これらは将来的に実装可能
-      return { status: 'not_implemented' };
+      case 'estat_business': {
+        if (!keys.estatAppId || !prefCode) {
+          return { taskType: task.type, data: null, gate: validateResult(task.type, null), cached: false };
+        }
+        const data = await getBusinessStats(keys.estatAppId, prefCode);
+        return { taskType: task.type, data, gate: validateResult(task.type, data), cached: false };
+      }
 
-    default:
-      return null;
+      case 'places_competitors': {
+        if (!keys.googlePlacesApiKey || !plan.area?.prefecture) {
+          return { taskType: task.type, data: null, gate: validateResult(task.type, null), cached: false };
+        }
+        // リトライ付きで実行
+        const { data, gate } = await executePlacesWithRetry(
+          keys.googlePlacesApiKey,
+          task.params.keyword || '',
+          plan.area.prefecture,
+        );
+        return { taskType: task.type, data, gate, cached: false };
+      }
+
+      case 'ads_keywords': {
+        if (!keys.googleAdsApiKey || !keys.googleAdsDeveloperToken || !keys.googleAdsCustomerId) {
+          return { taskType: task.type, data: null, gate: validateResult(task.type, null), cached: false };
+        }
+        const keywords = task.params.keywords || [plan.query];
+        const data = await getKeywordMetrics(
+          keys.googleAdsDeveloperToken,
+          keys.googleAdsCustomerId,
+          keys.googleAdsApiKey,
+          keywords,
+        );
+        return { taskType: task.type, data, gate: validateResult(task.type, data), cached: false };
+      }
+
+      default:
+        return { taskType: task.type, data: null, gate: validateResult(task.type, null), cached: false };
+    }
+  } catch (error) {
+    console.error(`[Executor] ${task.type} error:`, error);
+    return {
+      taskType: task.type,
+      data: null,
+      gate: { passed: false, taskType: task.type, resultCount: 0, retryAttempt: 0, message: `エラー: ${error}` },
+      cached: false,
+    };
   }
 }
 
@@ -254,42 +171,81 @@ async function executeTaskOnce(
  */
 export async function executePlan(
   plan: ResearchPlan,
-  keys: ApiKeys
+  keys: ApiKeys,
 ): Promise<ExecutorResult[]> {
-  console.log(`[Executor] Executing ${plan.tasks.length} tasks...`);
+  console.log(`[Executor] ${plan.tasks.length} tasks を実行中...`);
 
-  const results: ExecutorResult[] = [];
-
-  // 並列実行
-  const taskPromises = plan.tasks.map(task => executeTask(task, keys, plan));
-  const executorResults = await Promise.all(taskPromises);
-
-  for (const result of executorResults) {
-    results.push(result);
-    console.log(
-      `[Executor] ${result.taskType}: ${result.gate.message} (cached: ${result.cached})`
-    );
-  }
-
-  // 必須タスクの失敗をチェック
-  const requiredTasks = plan.tasks.filter(t => t.required);
-  const failedRequired = results.filter(
-    r => requiredTasks.some(t => t.type === r.taskType) && !r.gate.passed
+  // 全タスク並列実行
+  const results = await Promise.all(
+    plan.tasks.map(task => executeTask(task, keys, plan)),
   );
 
-  if (failedRequired.length > 0) {
-    console.warn(
-      `[Executor] ${failedRequired.length} required tasks failed:`,
-      failedRequired.map(r => r.taskType)
-    );
+  for (const r of results) {
+    console.log(`[Executor] ${r.taskType}: ${r.gate.message}`);
   }
 
   return results;
 }
 
 /**
- * キャッシュクリア（テスト用）
+ * 候補地ごとの競合検索＋周辺情報取得（Reporter後に使う）
  */
-export function clearCache() {
-  resultCache.clear();
+export async function enrichLocations(
+  locations: LocationResult[],
+  keys: ApiKeys,
+  businessKeywords: string[],
+): Promise<LocationResult[]> {
+  if (!keys.googlePlacesApiKey || locations.length === 0) {
+    return locations;
+  }
+
+  const competitorKeyword = businessKeywords.join(' ');
+
+  const enriched = await Promise.all(
+    locations.map(async (loc) => {
+      if (!loc.lat || !loc.lng) return loc;
+
+      try {
+        const [competitors, facilities] = await Promise.all([
+          nearbySearch({
+            apiKey: keys.googlePlacesApiKey,
+            lat: loc.lat,
+            lng: loc.lng,
+            radius: 5000,
+            keyword: competitorKeyword,
+          }),
+          getAreaFacilities(keys.googlePlacesApiKey, loc.lat, loc.lng, 3000),
+        ]);
+
+        const enrichedLoc = { ...loc };
+
+        // 実際の競合数で上書き
+        if (competitors.length > 0) {
+          enrichedLoc.competitorCount = competitors.length;
+        }
+
+        // 駅情報を追加
+        if (facilities.stations.length > 0) {
+          enrichedLoc.additionalInfo = {
+            ...enrichedLoc.additionalInfo,
+            '周辺駅': facilities.stations.slice(0, 3).map((s: any) => s.name).join('、'),
+          };
+        }
+
+        // 主要道路情報を追加
+        if (facilities.roads.length > 0) {
+          enrichedLoc.additionalInfo = {
+            ...enrichedLoc.additionalInfo,
+            '周辺道路': facilities.roads.slice(0, 3).map((r: any) => r.name).join('、'),
+          };
+        }
+
+        return enrichedLoc;
+      } catch {
+        return loc; // 補強失敗は無視
+      }
+    }),
+  );
+
+  return enriched;
 }
