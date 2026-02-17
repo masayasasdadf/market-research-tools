@@ -89,25 +89,34 @@ function classifyIntent(query: string): 'store_location' | 'signage_location' | 
  * クエリからビジネスキーワードを抽出
  */
 function extractBusinessKeywords(query: string): string[] {
-  const stopWords = [
-    'で', 'の', 'に', 'を', 'が', 'は', 'と', 'も', 'から', 'まで', 'する',
-    'て', 'た', 'ある', 'いる', 'ない', 'この', 'その', 'どの', 'どう',
+  // 日本語の助詞・接続詞・句読点で分割
+  const words = query
+    .split(/[\s、。・「」（）\n]+/)
+    .flatMap(chunk =>
+      // 助詞で更に分割: 「福岡県で廃車買取の需要が高く」→ [福岡県, 廃車買取, 需要, 高く]
+      chunk.split(/(?:で|の|に|を|が|は|と|も|から|まで|より|へ|って|した|する|して|という|ような|ている|ている|けど|だけ|ばかり|ほど|など|とか|やら|なら|ので|のに|ても|ては|では|には|とは|への|からの|までの|よりも)/)
+    )
+    .map(w => w.trim())
+    .filter(w => w.length >= 2);
+
+  // 除外するワード（一般語・指示語）
+  const stopWords = new Set([
     '出店', '適した', 'エリア', '場所', 'いくつか', '出して', 'ください',
     '需要', '高く', '競合', '少ない', '設置', '看板', 'ピックアップ', '複数',
     '教えて', '調べて', '知りたい', '分析', '最適', '人口', '増減', '地域別',
-    '交通量', '多い', '道路',
-  ];
+    '交通量', '多い', '道路', '候補地', '適した場所', '最適な', 'お願い',
+    'ある', 'いる', 'ない', 'どう', 'この', 'その', 'どの',
+  ]);
 
-  const prefNames = Object.keys(PREFECTURE_CODES);
+  const prefNames = new Set(Object.keys(PREFECTURE_CODES));
 
-  const words = query.split(/[\s、。・「」（）\n]+/).filter(w =>
-    w.length >= 2 &&
-    !stopWords.some(s => w === s) &&
-    !prefNames.some(p => w === p) &&
-    !w.match(/^[ぁ-ん]{1,2}$/) // 短いひらがなを除外
+  const filtered = words.filter(w =>
+    !stopWords.has(w) &&
+    !prefNames.has(w) &&
+    !w.match(/^[ぁ-ん]{1,3}$/) // 短いひらがなを除外
   );
 
-  return words.length > 0 ? words : [];
+  return filtered.length > 0 ? filtered : [];
 }
 
 /**

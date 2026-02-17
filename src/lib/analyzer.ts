@@ -21,16 +21,24 @@ interface AnalyzeParams {
  * クエリからビジネスキーワードを抽出（enrich用）
  */
 function extractBusinessKeywords(query: string): string[] {
-  const stopWords = [
-    'で', 'の', 'に', 'を', 'が', 'は', 'と', 'も', 'から', 'まで',
+  const words = query
+    .split(/[\s、。・「」（）\n]+/)
+    .flatMap(chunk =>
+      chunk.split(/(?:で|の|に|を|が|は|と|も|から|まで|より|へ|って|した|する|して|という|ような|ている|けど|だけ|ほど|など|とか|なら|ので|のに|ても|では|には|とは)/)
+    )
+    .map(w => w.trim())
+    .filter(w => w.length >= 2);
+
+  const stopWords = new Set([
     '出店', '適した', 'エリア', '場所', 'いくつか', '出して', 'ください',
     '需要', '高く', '競合', '少ない', '設置', '看板', 'ピックアップ', '複数',
-    '教えて', '調べて', '知りたい', '分析', '最適',
-  ];
-  const words = query.split(/[\s、。・「」（）\n]+/).filter(w =>
-    w.length >= 2 && !stopWords.some(s => w === s)
+    '教えて', '調べて', '知りたい', '分析', '最適', 'お願い',
+  ]);
+
+  const filtered = words.filter(w =>
+    !stopWords.has(w) && !w.match(/^[ぁ-ん]{1,3}$/)
   );
-  return words.length > 0 ? words : [];
+  return filtered.length > 0 ? filtered : [];
 }
 
 /**
