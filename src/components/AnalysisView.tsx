@@ -14,6 +14,8 @@ interface AnalysisViewProps {
 export default function AnalysisView({ analysis }: AnalysisViewProps) {
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
 
+  // 汎用調査結果（locations無し）の場合は何も表示しない
+  // （summaryがChatInterfaceで既に表示されているため）
   if (analysis.locations.length === 0) {
     return null;
   }

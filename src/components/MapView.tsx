@@ -28,15 +28,38 @@ export default function MapView({ locations, selectedIndex, onSelectLocation }: 
         shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
       });
 
+      // Cleanup existing map safely
       if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
+        try {
+          // Remove all markers first
+          markersRef.current.forEach(marker => {
+            try {
+              marker.remove();
+            } catch (e) {
+              // Ignore marker removal errors
+            }
+          });
+          markersRef.current = [];
+
+          // Remove map
+          mapInstanceRef.current.remove();
+          mapInstanceRef.current = null;
+        } catch (e) {
+          console.warn('Map cleanup error:', e);
+          mapInstanceRef.current = null;
+        }
       }
 
-      const defaultCenter: [number, number] = locations.length > 0
+      // Small delay to ensure DOM is ready
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      if (!mapRef.current) return; // DOM might have unmounted
+
+      const defaultCenter: [number, number] = locations.length > 0 && locations[0].lat && locations[0].lng
         ? [locations[0].lat, locations[0].lng]
         : [33.5902, 130.4017]; // Default: Fukuoka
 
-      const map = L.map(mapRef.current!, {
+      const map = L.map(mapRef.current, {
         center: defaultCenter,
         zoom: 11,
       });
@@ -97,12 +120,28 @@ export default function MapView({ locations, selectedIndex, onSelectLocation }: 
       }
     };
 
-    initMap();
+    initMap().catch(err => {
+      console.error('Map initialization error:', err);
+    });
 
     return () => {
+      // Cleanup on unmount
       if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
-        mapInstanceRef.current = null;
+        try {
+          markersRef.current.forEach(marker => {
+            try {
+              marker.remove();
+            } catch (e) {
+              // Ignore
+            }
+          });
+          mapInstanceRef.current.remove();
+        } catch (e) {
+          console.warn('Map cleanup on unmount error:', e);
+        } finally {
+          mapInstanceRef.current = null;
+          markersRef.current = [];
+        }
       }
     };
   }, [locations, selectedIndex]);
